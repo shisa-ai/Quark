@@ -141,8 +141,9 @@ def _get_quant_scheme_guidance(args: argparse.Namespace) -> list[str]:
             guidance.append(
                 "`--quant_scheme int8_dynamic` uses static per-channel weight quantization plus dynamic "
                 "runtime activation quantization. The calibration dataset, `--num_calib_data`, and `--seq_len` "
-                "do not determine quality-critical activation scales for this scheme; the current script still "
-                "loads a calibration dataloader because the PTQ API requires one."
+                "do not determine quality-critical activation scales for this scheme; this script skips loading "
+                "a real calibration dataset for plain `int8_dynamic` unless another option, such as a "
+                "calibration-dependent algorithm or ONNX export, needs samples."
             )
     elif scheme == "int8":
         guidance.append(
@@ -157,6 +158,22 @@ def _get_quant_scheme_guidance(args: argparse.Namespace) -> list[str]:
 def _emit_quant_scheme_guidance(args: argparse.Namespace) -> None:
     for message in _get_quant_scheme_guidance(args):
         warnings.warn(message, UserWarning)
+
+
+def _uses_calibration_dependent_algorithm(args: argparse.Namespace) -> bool:
+    quant_algo = getattr(args, "quant_algo", None)
+    algos = {algo.lower() for algo in quant_algo} if quant_algo else set()
+    calibration_dependent_algos = {"awq", "gptq", "gptaq", "qronos", "smoothquant", "autosmoothquant"}
+    return bool(algos & calibration_dependent_algos)
+
+
+def _should_skip_calibration_dataloader(args: argparse.Namespace) -> bool:
+    """Whether the example can avoid loading calibration data for this run."""
+    model_export = getattr(args, "model_export", None) or []
+    if "onnx" in model_export:
+        # ONNX export below consumes one sample from calib_dataloader as example input.
+        return False
+    return getattr(args, "quant_scheme", None) == "int8_dynamic" and not _uses_calibration_dependent_algorithm(args)
 
 
 def _build_quant_config(args: argparse.Namespace, model_config_type: str):
@@ -313,19 +330,23 @@ def main(args: argparse.Namespace) -> None:
 
     _emit_quant_scheme_guidance(args)
 
-    # 3. Define calibration dataloader(still need this step for weight only and dynamic quantization in Quark for current version.)
-    print("\n[INFO]: Loading dataset ...")
-    # When the model is small, accelerate will place it on the last device
+    # 3. Define calibration dataloader when this run needs sample data.
+    # Plain int8_dynamic only needs weight calibration; activation scales are dynamic at runtime.
     main_device = model.device if args.multi_gpu or args.multi_device else args.device
-    calib_dataloader = get_calib_dataloader(
-        dataset_name=args.dataset,
-        processor=processor if multimodal else None,
-        tokenizer=tokenizer,
-        batch_size=args.batch_size,
-        num_calib_data=args.num_calib_data,
-        seqlen=args.seq_len,
-        device=main_device,
-    )
+    if _should_skip_calibration_dataloader(args):
+        print("\n[INFO]: Skipping calibration dataset for plain int8_dynamic; activation scales are dynamic.")
+        calib_dataloader = None
+    else:
+        print("\n[INFO]: Loading dataset ...")
+        calib_dataloader = get_calib_dataloader(
+            dataset_name=args.dataset,
+            processor=processor if multimodal else None,
+            tokenizer=tokenizer,
+            batch_size=args.batch_size,
+            num_calib_data=args.num_calib_data,
+            seqlen=args.seq_len,
+            device=main_device,
+        )
 
     # 4. Quantization
     if not args.skip_quantization:

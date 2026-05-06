@@ -37,7 +37,7 @@ New Features
 
 -  Added a pre-quantization compatibility check for ``transformers`` in LLM PTQ workflows, and enabled dry-run compatibility checking by default with clearer error messages when model loading fails.
 
--  Added ``int8_dynamic`` LLM PTQ scheme for W8A8 INT8 with static per-channel weights and dynamic per-channel/token activations. The LLM PTQ example now warns that plain ``int8_dynamic`` does not use the calibration dataset for quality-critical activation scales, while static ``int8`` W8A8 is calibration-sensitive and ``int8_dynamic`` is recommended by default for LLM/vLLM inference.
+-  Added ``int8_dynamic`` LLM PTQ scheme for W8A8 INT8 with static per-channel weights and dynamic per-channel/token activations. The LLM PTQ example skips loading real calibration data for plain ``int8_dynamic`` because activation scales are dynamic at runtime; it also warns that static ``int8`` W8A8 is calibration-sensitive and ``int8_dynamic`` is recommended by default for LLM/vLLM inference.
 
 -  Added chat-style calibration dataset support for ``shisa-ai/shisa-v2.1-sharegpt``.
 

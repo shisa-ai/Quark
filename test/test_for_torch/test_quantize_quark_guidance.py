@@ -36,7 +36,8 @@ def test_int8_dynamic_guidance_says_calibration_dataset_is_unused_for_plain_sche
     assert len(guidance) == 1
     assert "calibration dataset" in guidance[0]
     assert "do not determine quality-critical activation scales" in guidance[0]
-    assert "PTQ API requires one" in guidance[0]
+    assert "skips loading" in guidance[0]
+    assert "plain `int8_dynamic`" in guidance[0]
 
 
 def test_int8_dynamic_guidance_keeps_algorithm_caveat():
@@ -67,3 +68,24 @@ def test_other_scheme_has_no_guidance():
     args = argparse.Namespace(quant_scheme="fp8", quant_algo=None)
 
     assert module._get_quant_scheme_guidance(args) == []
+
+
+def test_plain_int8_dynamic_skips_calibration_dataloader():
+    module = _load_quantize_quark_module()
+    args = argparse.Namespace(quant_scheme="int8_dynamic", quant_algo=None, model_export=["hf_format"])
+
+    assert module._should_skip_calibration_dataloader(args)
+
+
+def test_int8_dynamic_with_algorithm_keeps_calibration_dataloader():
+    module = _load_quantize_quark_module()
+    args = argparse.Namespace(quant_scheme="int8_dynamic", quant_algo=["smoothquant"], model_export=["hf_format"])
+
+    assert not module._should_skip_calibration_dataloader(args)
+
+
+def test_int8_dynamic_with_onnx_export_keeps_calibration_dataloader():
+    module = _load_quantize_quark_module()
+    args = argparse.Namespace(quant_scheme="int8_dynamic", quant_algo=None, model_export=["onnx"])
+
+    assert not module._should_skip_calibration_dataloader(args)
