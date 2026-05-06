@@ -1246,7 +1246,7 @@ DEFAULT_TEMPLATES = {
         "exclude_layers_name": [
             "lm_head",
             "*lm_head",
-            "mtp.fc",
+            "*mtp.*",
             "*linear_attn.conv1d",
             "*linear_attn.in_proj_a",
             "*linear_attn.in_proj_b",
@@ -1271,7 +1271,7 @@ DEFAULT_TEMPLATES = {
         "exclude_layers_name": [
             "lm_head",
             "*lm_head",
-            "mtp.fc",
+            "*mtp.*",
             "*linear_attn.conv1d",
             "*linear_attn.in_proj_a",
             "*linear_attn.in_proj_b",
@@ -1296,7 +1296,7 @@ DEFAULT_TEMPLATES = {
         "exclude_layers_name": [
             "lm_head",
             "*lm_head",
-            "mtp.fc",
+            "*mtp.*",
             "*linear_attn.conv1d",
             "*linear_attn.in_proj_a",
             "*linear_attn.in_proj_b",
@@ -1323,7 +1323,7 @@ DEFAULT_TEMPLATES = {
         "exclude_layers_name": [
             "lm_head",
             "*lm_head",
-            "mtp.fc",
+            "*mtp.*",
             "*linear_attn.conv1d",
             "*linear_attn.in_proj_a",
             "*linear_attn.in_proj_b",
