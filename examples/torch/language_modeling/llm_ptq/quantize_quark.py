@@ -122,6 +122,43 @@ def _copy_processor_metadata_if_available(model_dir: str, output_dir: str) -> No
         print(f"[INFO]: Copied processor metadata files: {', '.join(copied)}")
 
 
+def _get_quant_scheme_guidance(args: argparse.Namespace) -> list[str]:
+    """Return user-facing guidance for quantization scheme choices."""
+    scheme = getattr(args, "quant_scheme", None)
+    quant_algo = getattr(args, "quant_algo", None)
+    algos = {algo.lower() for algo in quant_algo} if quant_algo else set()
+    calibration_dependent_algos = {"awq", "gptq", "gptaq", "qronos", "smoothquant", "autosmoothquant"}
+
+    guidance = []
+    if scheme == "int8_dynamic":
+        if algos & calibration_dependent_algos:
+            guidance.append(
+                "`--quant_scheme int8_dynamic` uses dynamic runtime activation scales, so activation calibration "
+                "ranges are not baked into the W8A8 INT8 checkpoint. However, the selected quantization "
+                f"algorithm(s) {sorted(algos)} may still use calibration samples."
+            )
+        else:
+            guidance.append(
+                "`--quant_scheme int8_dynamic` uses static per-channel weight quantization plus dynamic "
+                "runtime activation quantization. The calibration dataset, `--num_calib_data`, and `--seq_len` "
+                "do not determine quality-critical activation scales for this scheme; the current script still "
+                "loads a calibration dataloader because the PTQ API requires one."
+            )
+    elif scheme == "int8":
+        guidance.append(
+            "`--quant_scheme int8` is static W8A8 INT8: calibration data and sequence length determine "
+            "baked activation scales and can strongly affect quality. For LLM/vLLM inference, prefer "
+            "`--quant_scheme int8_dynamic` by default; it uses dynamic activation scales at runtime and has "
+            "shown good quality without special calibration data in Qwen3.5 smoke/eval testing."
+        )
+    return guidance
+
+
+def _emit_quant_scheme_guidance(args: argparse.Namespace) -> None:
+    for message in _get_quant_scheme_guidance(args):
+        warnings.warn(message, UserWarning)
+
+
 def _build_quant_config(args: argparse.Namespace, model_config_type: str):
     """Build quant_config from args and model_config_type (shared by normal and file-to-file paths)."""
     if model_config_type not in LLMTemplate.list_available():
@@ -273,6 +310,8 @@ def main(args: argparse.Namespace) -> None:
                 "Quark tensor parallelism is not initialized properly. Please check the torchrun settings.", UserWarning
             )
             return
+
+    _emit_quant_scheme_guidance(args)
 
     # 3. Define calibration dataloader(still need this step for weight only and dynamic quantization in Quark for current version.)
     print("\n[INFO]: Loading dataset ...")

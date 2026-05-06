@@ -459,6 +459,10 @@ Recipe 3: INT4 Weight-Only Quantization & Json_SafeTensors_Export with AWQ
 Recipe 4: INT8 Static Quantization & Json_SafeTensors_Export (on CPU)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+.. warning::
+
+   ``int8`` is static W8A8 INT8: calibration data and sequence length determine baked activation scales and can strongly affect quality. For LLM/vLLM inference, prefer ``int8_dynamic`` by default unless static activation scales are explicitly required.
+
 .. code-block:: bash
 
    python3 quantize_quark.py --model_dir [llama checkpoint folder] \
@@ -471,7 +475,7 @@ Recipe 4: INT8 Static Quantization & Json_SafeTensors_Export (on CPU)
 Recipe 4A: INT8 Dynamic Activation Quantization & Json_SafeTensors_Export
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use ``int8_dynamic`` for W8A8 INT8 with static per-channel weights and dynamic per-channel/token activations. For chat/instruct models, prefer chat-style calibration data such as ``HuggingFaceH4/ultrachat_200k`` or ``shisa-ai/shisa-v2.1-sharegpt``.
+Use ``int8_dynamic`` for W8A8 INT8 with static per-channel weights and dynamic per-channel/token activations. Without calibration-dependent algorithms such as SmoothQuant/AWQ/GPTQ, activation scales are computed dynamically at runtime, so the calibration dataset, ``--num_calib_data`` and ``--seq_len`` do not determine quality-critical activation scales. The script still loads a calibration dataloader because the PTQ API currently requires one.
 
 .. code-block:: bash
 
