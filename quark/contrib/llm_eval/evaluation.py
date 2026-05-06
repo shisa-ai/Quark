@@ -20,16 +20,6 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from datasets import Dataset, load_dataset
-from lm_eval.evaluator import simple_evaluate
-from lm_eval.loggers import EvaluationTracker
-from lm_eval.models.huggingface import HFLM
-from lm_eval.tasks import TaskManager
-from lm_eval.utils import (
-    handle_non_serializable,
-    load_yaml_config,
-    make_table,
-    simple_parse_args_string,
-)
 from tqdm import tqdm
 from transformers import AutoConfig, AutoTokenizer, PreTrainedTokenizer  # type: ignore[attr-defined]
 
@@ -206,6 +196,11 @@ def lm_eval_entrypoint(
 
     `cli_evaluate` from lm-evaluation-harness currently does not properly support it.
     """
+    from lm_eval.evaluator import simple_evaluate
+    from lm_eval.loggers import EvaluationTracker
+    from lm_eval.tasks import TaskManager
+    from lm_eval.utils import handle_non_serializable, load_yaml_config, make_table, simple_parse_args_string
+
     hf_hub_log_args = ""
 
     if len(kwargs) > 0:
@@ -384,6 +379,9 @@ def task_eval(
     fewshot_as_multiturn: bool = False,
     log_samples: bool = False,
 ) -> None:
+    from lm_eval.models.huggingface import HFLM
+    from lm_eval.utils import simple_parse_args_string
+
     def create_from_arg_obj(
         cls: type["T"], arg_dict: dict[str, Any], additional_config: dict[str, Any] | None = None
     ) -> "T":

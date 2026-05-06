@@ -23,6 +23,7 @@ from quark.torch.quantization.config.config import (
     GPTQConfig,
     Int4PerChannelSpec,
     Int4PerGroupSpec,
+    Int8PerChannelSpec,
     Int8PerTensorSpec,
     MX6Spec,
     OCP_MXFP4Spec,
@@ -114,6 +115,29 @@ class Int8Scheme(QuantizationScheme):
             observer_method="min_max", symmetric=True, scale_type="float", round_method="half_even", is_dynamic=False
         ).to_quantization_spec()
         return QLayerConfig(weight=spec, input_tensors=spec)
+
+
+class Int8DynamicScheme(QuantizationScheme):
+    """Scheme for dynamic W8A8 INT8 quantization.
+
+    Weights are statically quantized per output channel, while activations are
+    quantized dynamically per token/channel at runtime. This matches the W8A8
+    shape used by vLLM/Quark INT8 checkpoints such as known-good Qwen3.6 MoE
+    exports more closely than the legacy static per-tensor ``int8`` scheme.
+    """
+
+    def __init__(self) -> None:
+        pass
+
+    @property
+    def config(self) -> QLayerConfig:
+        weight_spec = Int8PerChannelSpec(
+            ch_axis=0, symmetric=True, scale_type="float", round_method="half_even", is_dynamic=False
+        ).to_quantization_spec()
+        input_spec = Int8PerChannelSpec(
+            ch_axis=1, symmetric=True, scale_type="float", round_method="half_even", is_dynamic=True
+        ).to_quantization_spec()
+        return QLayerConfig(weight=weight_spec, input_tensors=input_spec)
 
 
 class FP8Scheme(QuantizationScheme):
@@ -257,8 +281,9 @@ class QuantizationSchemeCollection:
         self._schemes["uint4_wo_128"] = Uint4WeightOnlyScheme(group_size=128)
         self._schemes["uint4_wo_per_channel"] = Uint4WeightOnlyPerChannelScheme()
 
-        # INT8 scheme
+        # INT8 schemes
         self._schemes["int8"] = Int8Scheme()
+        self._schemes["int8_dynamic"] = Int8DynamicScheme()
 
         # FP8 quantization schemes
         self._schemes["fp8"] = FP8Scheme()

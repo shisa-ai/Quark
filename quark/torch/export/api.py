@@ -62,7 +62,7 @@ if is_transformers_available():
 if is_accelerate_available():
     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 if is_safetensors_available():
-    from safetensors.torch import save_file
+    from safetensors.torch import load_file, save_file
 
 __all__ = [
     "export_safetensors",
@@ -73,6 +73,58 @@ __all__ = [
 ]
 
 logger = ScreenLogger(__name__)
+
+
+def _rewrite_real_quantized_safetensor_keys_for_export(output_dir: Path) -> None:
+    """Rewrite internal QParamsLinear keys to serialized Quark export keys.
+
+    Transformers >= 4.57 changed state-dict serialization enough that attaching
+    ``_fix_state_dict_key_on_save`` to the model is not always sufficient.  Keep
+    the exported checkpoint format stable by rewriting safetensors shards after
+    ``save_pretrained`` as a final safety net.
+    """
+    if not is_safetensors_available():
+        return
+
+    changed_total = 0
+    for safetensor_path in sorted(output_dir.glob("*.safetensors")):
+        tensors = load_file(str(safetensor_path))
+        rewritten_tensors: dict[str, torch.Tensor] = {}
+        changed = 0
+        for key, tensor in tensors.items():
+            new_key, _ = _fix_state_dict_key_on_save(key)
+            if new_key != key:
+                changed += 1
+            if new_key in rewritten_tensors:
+                raise ValueError(f"Duplicate safetensors key after export rewrite: {key} -> {new_key}")
+            rewritten_tensors[new_key] = tensor
+        if changed:
+            save_file(rewritten_tensors, str(safetensor_path), metadata={"format": "pt"})
+            changed_total += changed
+
+    index_path = output_dir / "model.safetensors.index.json"
+    if index_path.is_file():
+        with open(index_path, encoding="utf-8") as f:
+            index_data = json.load(f)
+        weight_map = index_data.get("weight_map", {})
+        rewritten_weight_map = {}
+        changed = 0
+        for key, shard_name in weight_map.items():
+            new_key, _ = _fix_state_dict_key_on_save(key)
+            if new_key != key:
+                changed += 1
+            if new_key in rewritten_weight_map:
+                raise ValueError(f"Duplicate index key after export rewrite: {key} -> {new_key}")
+            rewritten_weight_map[new_key] = shard_name
+        if changed:
+            index_data["weight_map"] = rewritten_weight_map
+            with open(index_path, "w", encoding="utf-8") as f:
+                json.dump(index_data, f, indent=2, sort_keys=True)
+                f.write("\n")
+            changed_total += changed
+
+    if changed_total:
+        logger.info(f"Rewrote {changed_total} quantized safetensors key(s) to export format")
 
 
 def _get_submodule_or_none(model: nn.Module, module_path: str) -> nn.Module | None:
@@ -245,6 +297,8 @@ class SafetensorsExporter(BaseExporter):
 
         # Export using HF format
         export_hf_model(model=processed_model, export_dir=str(self.output_dir))
+        if self.weight_format == "real_quantized" and self.custom_mode == "quark":
+            _rewrite_real_quantized_safetensor_keys_for_export(self.output_dir)
 
         # Clean up any temporary buffers we inserted
         for module, buffer_name in inserted_buffers:

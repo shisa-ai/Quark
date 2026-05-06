@@ -123,6 +123,7 @@ def test_supported_schemes():
         "mx6",
         "bfp16",
         "int8",
+        "int8_dynamic",
     ]
     assert sorted(LLMTemplate._SUPPORTED_SCHEMES) == sorted(expected_schemes)
 
@@ -144,6 +145,7 @@ def test_supported_schemes():
         "mx6",
         "bfp16",
         "int8",
+        "int8_dynamic",
     ]
     for scheme in working_schemes:
         config = template.get_config(scheme)
@@ -313,6 +315,23 @@ def test_int8_scheme():
     assert config.global_quant_config.input_tensors is not None
     assert config.global_quant_config.weight.dtype == Dtype.int8
     assert config.global_quant_config.input_tensors.dtype == Dtype.int8
+
+
+def test_int8_dynamic_scheme():
+    """Test dynamic W8A8 INT8 quantization scheme"""
+    template = LLMTemplate.get("llama")
+    config = template.get_config("int8_dynamic")
+    assert isinstance(config, Config)
+    assert config.global_quant_config.weight is not None
+    assert config.global_quant_config.input_tensors is not None
+    assert config.global_quant_config.weight.dtype == Dtype.int8
+    assert config.global_quant_config.input_tensors.dtype == Dtype.int8
+    assert config.global_quant_config.weight.qscheme == QSchemeType.per_channel
+    assert config.global_quant_config.input_tensors.qscheme == QSchemeType.per_channel
+    assert config.global_quant_config.weight.ch_axis == 0
+    assert config.global_quant_config.input_tensors.ch_axis == 1
+    assert not config.global_quant_config.weight.is_dynamic
+    assert config.global_quant_config.input_tensors.is_dynamic
 
 
 def test_mx6_scheme():

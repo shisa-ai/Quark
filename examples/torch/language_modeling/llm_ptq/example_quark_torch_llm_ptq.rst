@@ -468,6 +468,21 @@ Recipe 4: INT8 Static Quantization & Json_SafeTensors_Export (on CPU)
                              --device cpu \
                              --model_export hf_format
 
+Recipe 4A: INT8 Dynamic Activation Quantization & Json_SafeTensors_Export
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use ``int8_dynamic`` for W8A8 INT8 with static per-channel weights and dynamic per-channel/token activations. For chat/instruct models, prefer chat-style calibration data such as ``HuggingFaceH4/ultrachat_200k`` or ``shisa-ai/shisa-v2.1-sharegpt``.
+
+.. code-block:: bash
+
+   python3 quantize_quark.py --model_dir [chat model checkpoint folder] \
+                             --output_dir output_dir \
+                             --quant_scheme int8_dynamic \
+                             --dataset HuggingFaceH4/ultrachat_200k \
+                             --num_calib_data 128 \
+                             --seq_len 1024 \
+                             --model_export hf_format
+
 Recipe 5: UINT4 Weight-Only Quantization & GGUF_Export with AWQ
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

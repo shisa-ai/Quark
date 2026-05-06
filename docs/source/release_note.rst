@@ -37,10 +37,16 @@ New Features
 
 -  Added a pre-quantization compatibility check for ``transformers`` in LLM PTQ workflows, and enabled dry-run compatibility checking by default with clearer error messages when model loading fails.
 
+-  Added ``int8_dynamic`` LLM PTQ scheme for W8A8 INT8 with static per-channel weights and dynamic per-channel/token activations.
+
+-  Added chat-style calibration dataset support for ``shisa-ai/shisa-v2.1-sharegpt``.
+
 Bug fixes and minor improvements
 """"""""""""""""""""""""""""""""
 
 -  Fixed weight calibration coverage to ensure complete calibration even for weights outside the forward path, and added token distribution coverage warnings during calibration.
+
+-  Fixed real-quantized Quark safetensors exports to rewrite internal ``QParamsLinear`` keys such as ``weight_quantizer.scale`` to serialized export keys such as ``weight_scale`` for compatibility with vLLM Quark loaders.
 
 AMD Quark for ONNX
 ^^^^^^^^^^^^^^^^^^

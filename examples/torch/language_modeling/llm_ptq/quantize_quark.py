@@ -416,6 +416,7 @@ if __name__ == "__main__":
             "pileval_for_awq_benchmark",
             "wikitext_for_gptq_benchmark",
             "HuggingFaceH4/ultrachat_200k",
+            "shisa-ai/shisa-v2.1-sharegpt",
             "ScienceQA",
         ],
     )

@@ -206,6 +206,26 @@ def get_calib_dataloader_to_dict(
     return calib_dataloader
 
 
+def _tokenize_chat_messages(
+    messages: list[dict[str, str]], tokenizer: AutoTokenizer | None, seqlen: int, device: str | None
+) -> dict[str, torch.Tensor]:
+    text = tokenizer.apply_chat_template(  # type: ignore[attr-defined,union-attr]
+        messages,
+        tokenize=False,
+    )
+    encoded = tokenizer(  # type: ignore[operator,misc]
+        text,
+        padding=False,
+        max_length=seqlen,
+        truncation=True,
+        add_special_tokens=False,
+    )
+    return {
+        "input_ids": torch.tensor([encoded["input_ids"]], device=device),
+        "attention_mask": torch.tensor([encoded["attention_mask"]], device=device),
+    }
+
+
 def get_ultrachat(
     dataset_name: str = "HuggingFaceH4/ultrachat_200k",
     tokenizer: AutoTokenizer | None = None,
@@ -219,32 +239,51 @@ def get_ultrachat(
     ds = load_dataset(dataset_name, split="train_sft")
     ds = ds.shuffle(seed=42).select(range(num_calib_data))
 
-    def preprocess(example: Any) -> dict[str, str]:
-        return {
-            "text": tokenizer.apply_chat_template(  # type: ignore[attr-defined,union-attr]
-                example["messages"],
-                tokenize=False,
-            )
-        }
+    traindataset = []
+    for sample in ds:
+        traindataset.append(_tokenize_chat_messages(sample["messages"], tokenizer, MAX_SEQUENCE_LENGTH, device))
 
-    ds = ds.map(preprocess)
+    calib_dataloader: DataLoader[list[dict[str, torch.Tensor]]] = DataLoader(
+        traindataset, batch_size=None, shuffle=False
+    )  # type: ignore
+    return calib_dataloader
 
-    def tokenize(sample: Any) -> Any:
-        return tokenizer(  # type: ignore[operator,misc]
-            sample["text"],
-            padding=False,
-            max_length=MAX_SEQUENCE_LENGTH,
-            truncation=True,
-            add_special_tokens=False,
-        )
 
-    ds = ds.map(tokenize, remove_columns=ds.column_names)
+def get_shisa_sharegpt(
+    dataset_name: str = "shisa-ai/shisa-v2.1-sharegpt",
+    tokenizer: AutoTokenizer | None = None,
+    batch_size: int = 1,
+    num_calib_data: int = 512,
+    seqlen: int = 512,
+    device: str | None = None,
+) -> DataLoader[list[dict[str, torch.Tensor]]]:
+    del batch_size  # Chat calibration samples are yielded one-by-one.
+
+    role_map = {
+        "human": "user",
+        "user": "user",
+        "gpt": "assistant",
+        "assistant": "assistant",
+        "system": "system",
+    }
+    ds = load_dataset(dataset_name, split="train").shuffle(seed=42).select(range(num_calib_data))
 
     traindataset = []
-    for i in range(len(ds["input_ids"])):
-        inp = torch.tensor([ds["input_ids"][i]], device=device)
-        attention_mask = torch.tensor([ds["attention_mask"][i]], device=device)
-        traindataset.append({"input_ids": inp, "attention_mask": attention_mask})
+    for sample in ds:
+        messages = []
+        for turn in sample.get("conversations", []):
+            if not isinstance(turn, dict):
+                continue
+            role_value = turn.get("role", turn.get("from"))
+            content_value = turn.get("content", turn.get("value"))
+            if role_value is None or content_value is None:
+                continue
+            role = role_map.get(str(role_value).lower())
+            if role is None:
+                continue
+            messages.append({"role": role, "content": str(content_value)})
+        if messages:
+            traindataset.append(_tokenize_chat_messages(messages, tokenizer, seqlen, device))
 
     calib_dataloader: DataLoader[list[dict[str, torch.Tensor]]] = DataLoader(
         traindataset, batch_size=None, shuffle=False
@@ -261,6 +300,8 @@ def get_calib_dataloader(
         return get_calib_dataloader_for_benchmark(dataset_name, **kwargs)
     elif "ultrachat" in dataset_name:
         return get_ultrachat(dataset_name, **kwargs)
+    elif dataset_name == "shisa-ai/shisa-v2.1-sharegpt":
+        return get_shisa_sharegpt(dataset_name, **kwargs)
     else:
         raise NotImplementedError
 
