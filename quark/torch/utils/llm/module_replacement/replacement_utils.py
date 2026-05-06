@@ -574,80 +574,142 @@ def replace_qwen3vlmoe_experts_with_linear(experts_module: "Qwen3VLMoeTextExpert
     Convert fused gate+up experts in `Qwen3VLMoeTextExperts` into three separate Linear layers
     per expert: `gate_proj`, `up_proj`, and `down_proj`.
     """
-    print("Converting Qwen3VLMoeTextExperts to use separate gate up down Linear layers...")
+    _replace_qwen_fused_moe_experts_with_linear(experts_module, "Qwen3VLMoeTextExperts")
 
-    # ----- Resolve properties and device/dtype -----
-    num_experts: int = experts_module.num_experts
-    hidden_size: int = experts_module.hidden_size
-    expert_dim: int = experts_module.expert_dim
-    original_device = experts_module.gate_up_proj.device
-    original_dtype = experts_module.gate_up_proj.dtype
-    is_meta: bool = getattr(experts_module.gate_up_proj, "is_meta", False) or original_device == torch.device("meta")
-    # ----- Create per-expert modules (construct directly on target device) -----
+
+def replace_qwen3_5_moe_experts_with_linear(experts_module: nn.Module) -> None:
+    """
+    Convert fused Qwen3.5/Qwen3.6 MoE expert weights into three separate Linear layers
+    per expert: `gate_proj`, `up_proj`, and `down_proj`.
+    """
+    _replace_qwen_fused_moe_experts_with_linear(experts_module, "Qwen3_5MoeExperts")
+
+
+def _get_qwen_fused_moe_dims(module: nn.Module) -> tuple[int, int]:
+    hidden_size = getattr(module, "hidden_size", None)
+    if hidden_size is None:
+        hidden_size = getattr(module, "hidden_dim", None)
+
+    intermediate_size = getattr(module, "intermediate_size", None)
+    if intermediate_size is None:
+        intermediate_size = getattr(module, "intermediate_dim", None)
+    if intermediate_size is None:
+        intermediate_size = getattr(module, "expert_dim", None)
+
+    if hidden_size is None or intermediate_size is None:
+        raise AttributeError(
+            f"Could not infer hidden/intermediate dimensions for fused MoE experts module {type(module)}."
+        )
+
+    return int(hidden_size), int(intermediate_size)
+
+
+def _replace_qwen_fused_moe_experts_with_linear(experts_module: nn.Module, module_label: str) -> None:
+    print(f"Converting {module_label} to use separate gate/up/down Linear layers...")
+
+    num_experts: int = int(experts_module.num_experts)  # type: ignore[attr-defined]
+    hidden_size, intermediate_size = _get_qwen_fused_moe_dims(experts_module)
+    experts_module._quark_hidden_size = hidden_size  # type: ignore[attr-defined]
+    experts_module._quark_intermediate_size = intermediate_size  # type: ignore[attr-defined]
+
+    original_device = experts_module.gate_up_proj.device  # type: ignore[attr-defined]
+    original_dtype = experts_module.gate_up_proj.dtype  # type: ignore[attr-defined]
+    is_meta: bool = (  # type: ignore[attr-defined]
+        getattr(experts_module.gate_up_proj, "is_meta", False) or original_device == torch.device("meta")
+    )
     target_device_for_new = original_device if not is_meta else torch.device("meta")
+
     for expert_index in range(num_experts):
         expert_module = torch.nn.Module()
         expert_module.gate_proj = torch.nn.Linear(
-            hidden_size, expert_dim, bias=False, device=target_device_for_new, dtype=original_dtype
+            hidden_size, intermediate_size, bias=False, device=target_device_for_new, dtype=original_dtype
         )
         expert_module.up_proj = torch.nn.Linear(
-            hidden_size, expert_dim, bias=False, device=target_device_for_new, dtype=original_dtype
+            hidden_size, intermediate_size, bias=False, device=target_device_for_new, dtype=original_dtype
         )
         expert_module.down_proj = torch.nn.Linear(
-            expert_dim, hidden_size, bias=False, device=target_device_for_new, dtype=original_dtype
+            intermediate_size, hidden_size, bias=False, device=target_device_for_new, dtype=original_dtype
         )
-
         setattr(experts_module, str(expert_index), expert_module)
 
-    weights_synced = _qwen3vlmoe_sync_weights_to_linear(experts_module)
-    experts_module.forward = MethodType(_qwen3vlmoe_forward, experts_module)
+    weights_synced = _qwen_fused_moe_sync_weights_to_linear(experts_module)
+    experts_module.forward = MethodType(_qwen_fused_moe_forward, experts_module)
     if weights_synced:
-        _qwen3vlmoe_cleanup_fused(experts_module)
+        _qwen_fused_moe_cleanup_fused(experts_module)
+
+
+def _split_qwen_fused_moe_weights(
+    gate_up_weight: torch.Tensor,
+    down_weight: torch.Tensor,
+    hidden_size: int,
+    intermediate_size: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return Linear-compatible gate/up/down weights for one fused expert."""
+    if gate_up_weight.shape == (2 * intermediate_size, hidden_size):
+        gate_weight = gate_up_weight[:intermediate_size, :]
+        up_weight = gate_up_weight[intermediate_size:, :]
+    elif gate_up_weight.shape == (hidden_size, 2 * intermediate_size):
+        gate_weight = gate_up_weight[:, :intermediate_size].t()
+        up_weight = gate_up_weight[:, intermediate_size:].t()
+    else:
+        raise ValueError(
+            f"Unsupported gate_up_proj expert weight shape {tuple(gate_up_weight.shape)}; "
+            f"expected {(2 * intermediate_size, hidden_size)} or {(hidden_size, 2 * intermediate_size)}."
+        )
+
+    if down_weight.shape == (hidden_size, intermediate_size):
+        down_linear_weight = down_weight
+    elif down_weight.shape == (intermediate_size, hidden_size):
+        down_linear_weight = down_weight.t()
+    else:
+        raise ValueError(
+            f"Unsupported down_proj expert weight shape {tuple(down_weight.shape)}; "
+            f"expected {(hidden_size, intermediate_size)} or {(intermediate_size, hidden_size)}."
+        )
+
+    return gate_weight.contiguous(), up_weight.contiguous(), down_linear_weight.contiguous()
 
 
 @torch.no_grad()
-def _qwen3vlmoe_sync_weights_to_linear(module: nn.Module) -> bool:
+def _qwen_fused_moe_sync_weights_to_linear(module: nn.Module) -> bool:
     """
-    Split fused weights and copy into per-expert Linear layers.
-    Returns True if synced; returns False if fused weights are still on 'meta' (not materialized).
-    Reads fused tensors from:
-        module.gate_up_proj, module.down_proj
+    Split fused weights and copy them into per-expert Linear layers.
+    Returns True if weights were synced or already synced; returns False if fused weights are unavailable.
     """
     if getattr(module, "_weights_synced", False):
         return True
+
     W_gate_up = getattr(module, "gate_up_proj", None)
     W_down = getattr(module, "down_proj", None)
-
     if W_gate_up is None or W_down is None:
         return False
 
     is_offload = getattr(W_gate_up, "is_meta", False)
     if is_offload:
-        W_gate_up = module._hf_hook.weights_map["gate_up_proj"]
-        W_down = module._hf_hook.weights_map["down_proj"]
+        W_gate_up = module._hf_hook.weights_map["gate_up_proj"]  # type: ignore[attr-defined]
+        W_down = module._hf_hook.weights_map["down_proj"]  # type: ignore[attr-defined]
+
+    hidden_size, intermediate_size = _get_qwen_fused_moe_dims(module)
+
     try:
         with torch.no_grad():
-            for expert_index in range(module.num_experts):
+            for expert_index in range(int(module.num_experts)):  # type: ignore[attr-defined]
                 expert_module = getattr(module, str(expert_index))
-                W_gate_current = W_gate_up[expert_index][:, : module.intermediate_size].t()
-                W_up_current = W_gate_up[expert_index][:, module.intermediate_size :].t()
-                W_down_current = W_down[expert_index].t()
-                # copy from weight_map on cpu by hook in forward function
+                gate_weight, up_weight, down_weight = _split_qwen_fused_moe_weights(
+                    W_gate_up[expert_index], W_down[expert_index], hidden_size, intermediate_size
+                )
+
                 if is_offload:
-                    # keep meta weight, and add hook for linears
-                    hook = module._hf_hook
+                    hook = module._hf_hook  # type: ignore[attr-defined]
                     dataset = hook.weights_map.dataset
-                    layer_value = [W_gate_current, W_up_current, W_down_current]
+                    layer_values = [gate_weight, up_weight, down_weight]
                     for index, layer_name in enumerate(["gate_proj", "up_proj", "down_proj"]):
-                        # hook.weights_map.dataset.state_dict[]
-                        # 1.add hook
-                        # 2.add kv to weights_map.dataset.state_dict
-                        # at cpu, so the direct assignment
                         prefix = f"{hook.weights_map.prefix}{expert_index}.{layer_name}."
                         prefixed_weights_map = PrefixedDataset(dataset, prefix)
                         full_name = f"{prefix}weight"
-                        dataset.all_keys.append(full_name)
-                        dataset.state_dict[full_name] = layer_value[index]
+                        if hasattr(dataset, "all_keys") and full_name not in dataset.all_keys:
+                            dataset.all_keys.append(full_name)
+                        dataset.state_dict[full_name] = layer_values[index]
 
                         quark_hook = AlignDevicesHook(
                             execution_device=hook.execution_device,
@@ -659,79 +721,77 @@ def _qwen3vlmoe_sync_weights_to_linear(module: nn.Module) -> bool:
                             skip_keys=hook.skip_keys,
                             tied_params_map=hook.tied_params_map,
                         )
-                        linear_module = getattr(expert_module, layer_name)
-                        add_hook_to_module(linear_module, quark_hook)
-                        pass
-
-                # copy from weights
+                        add_hook_to_module(getattr(expert_module, layer_name), quark_hook)
                 else:
-                    expert_module.gate_proj.weight.data.copy_(W_gate_current.to(W_gate_up.device))
-                    expert_module.up_proj.weight.data.copy_(W_up_current.to(W_gate_up.device))
-                    expert_module.down_proj.weight.data.copy_(W_down_current.to(W_down.device))
+                    expert_module.gate_proj.weight.data.copy_(gate_weight.to(expert_module.gate_proj.weight.device))
+                    expert_module.up_proj.weight.data.copy_(up_weight.to(expert_module.up_proj.weight.device))
+                    expert_module.down_proj.weight.data.copy_(down_weight.to(expert_module.down_proj.weight.device))
 
-            if is_offload:  # del original merged data in cpu
-                prefix = module._hf_hook.weights_map.prefix
-                del module._hf_hook.weights_map.dataset.state_dict[f"{prefix}gate_up_proj"]
-                del module._hf_hook.weights_map.dataset.state_dict[f"{prefix}down_proj"]
-                module._hf_hook.weights_map.dataset.all_keys.remove(f"{prefix}gate_up_proj")
-                module._hf_hook.weights_map.dataset.all_keys.remove(f"{prefix}down_proj")
-            module._weights_synced = True
+            if is_offload:
+                prefix = module._hf_hook.weights_map.prefix  # type: ignore[attr-defined]
+                dataset = module._hf_hook.weights_map.dataset  # type: ignore[attr-defined]
+                for name in [f"{prefix}gate_up_proj", f"{prefix}down_proj"]:
+                    dataset.state_dict.pop(name, None)
+                    if hasattr(dataset, "all_keys") and name in dataset.all_keys:
+                        dataset.all_keys.remove(name)
+
+            module._weights_synced = True  # type: ignore[attr-defined]
             return True
     except Exception as e:
-        print(f"Warning: Failed to sync weights: {e}")
+        print(f"Warning: Failed to sync fused MoE expert weights: {e}")
         return False
 
 
 @torch.no_grad()
-def _qwen3vlmoe_forward(
+def _qwen_fused_moe_forward(
     self: Any,
     hidden_states: torch.Tensor,
-    routing_weights: torch.Tensor,
-    router_indices: torch.Tensor,
+    top_k_index: torch.Tensor,
+    top_k_weights: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Args:
-        hidden_states (torch.Tensor): (batch_size * token_num, hidden_size)
-        routing_weights (torch.Tensor): (batch_size * token_num, num_experts)
-        router_indices (torch.Tensor): (batch_size * token_num, top_k)
-    Returns:
-        torch.Tensor
-    Forward using per-expert `gate_proj`, `up_proj`, `down_proj`.
+    Forward using per-expert `gate_proj`, `up_proj`, and `down_proj` modules while preserving
+    the original Qwen fused-expert routing behavior.
     """
-    synced = _qwen3vlmoe_sync_weights_to_linear(self)
+    synced = _qwen_fused_moe_sync_weights_to_linear(self)
     if not synced:
         raise RuntimeError(
-            "Qwen3VLMoeTextExperts weights are on 'meta' (not materialized). "
-            "Move fused parameters to a real device first, then call forward."
+            "Qwen fused MoE expert weights are on 'meta' or unavailable. Move fused parameters to a real device "
+            "or ensure accelerate offload hooks are attached before calling forward."
         )
-    batch_size = hidden_states.shape[0]
-    hidden_states = hidden_states.reshape(-1, self.hidden_size)  # (num_tokens, hidden_size)
-    if self.training:
-        raise RuntimeError("Training mode is not supported yet. Please switch to eval mode.")
-    else:
-        token_states_repeated = hidden_states.repeat(self.num_experts, 1).view(self.num_experts, -1, self.hidden_size)
-        gate_outputs = [getattr(self, str(i)).gate_proj(token_states_repeated[i]) for i in range(self.num_experts)]
-        up_outputs = [getattr(self, str(i)).up_proj(token_states_repeated[i]) for i in range(self.num_experts)]
-        gate_output = torch.stack(gate_outputs, dim=0)
-        up_output = torch.stack(up_outputs, dim=0)
-        gated_input = up_output * self.act_fn(gate_output)
-        next_states = torch.stack(
-            [getattr(self, str(i)).down_proj(gated_input[i]) for i in range(self.num_experts)], dim=0
-        )
-        next_states = next_states.reshape(self.num_experts, batch_size, -1, self.hidden_size)
-        routing_weights_expanded = routing_weights.transpose(0, 1).view(self.num_experts, batch_size, -1)[..., None]
-        next_states = next_states * routing_weights_expanded
-        next_states = next_states.sum(dim=0)
-    return next_states
+
+    hidden_size = getattr(self, "_quark_hidden_size", hidden_states.shape[-1])
+    original_shape = hidden_states.shape
+    hidden_states = hidden_states.reshape(-1, hidden_size)
+    final_hidden_states = torch.zeros_like(hidden_states)
+
+    with torch.no_grad():
+        expert_mask = torch.nn.functional.one_hot(top_k_index.to(torch.long), num_classes=self.num_experts)
+        expert_mask = expert_mask.permute(2, 1, 0)
+        expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+
+    for expert_idx_tensor in expert_hit:
+        expert_idx = int(expert_idx_tensor[0].item())
+        if expert_idx == self.num_experts:
+            continue
+        top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+        current_state = hidden_states[token_idx]
+        expert_module = getattr(self, str(expert_idx))
+        gate = expert_module.gate_proj(current_state)
+        up = expert_module.up_proj(current_state)
+        current_hidden_states = expert_module.down_proj(self.act_fn(gate) * up)
+        current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
+        final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+
+    return final_hidden_states.view(original_shape)
 
 
 @torch.no_grad()
-def _qwen3vlmoe_cleanup_fused(module: nn.Module) -> None:
-    """Remove fused params from the module if desired."""
-    # The `down_Proj` linear has a prefix number, so it won't be deleted.
-    # What's being deleted here is the `nn.parameter` of the original model.
+def _qwen_fused_moe_cleanup_fused(module: nn.Module) -> None:
+    """Remove original fused expert parameters after they have been copied into Linear layers."""
     for name in ["gate_up_proj", "down_proj"]:
         if hasattr(module, name):
             logger.debug(f"Removing {name} attribute from {type(module)}")
             delattr(module, name)
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()

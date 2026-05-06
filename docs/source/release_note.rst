@@ -15,7 +15,7 @@ Model Support
 Supported out-of-box model architectures:
 
 -  Kimi-K2-Thinking, Kimi-K2-Instruct, Kimi-K2.5
--  Qwen3 MoE, Qwen3 Coder, Qwen3 Coder-Next
+-  Qwen3 MoE, Qwen3 Coder, Qwen3 Coder-Next, Qwen3.5/Qwen3.6 dense and MoE
 -  DeepSeek-V3.2, DeepSeek-OCR
 -  GLM-4.7
 -  Minimax-M2.1

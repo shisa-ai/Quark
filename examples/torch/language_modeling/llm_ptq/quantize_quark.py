@@ -174,7 +174,15 @@ def main(args: argparse.Namespace) -> None:
         args.model_dir, max_seq_len=args.seq_len, model_type=model_type, trust_remote_code=args.trust_remote_code
     )
 
-    multimodal = True if model_type in ["mllama", "llama4", "gemma3", "qwen3_vl_moe", "deepseek_vl_v2"] else False
+    multimodal = model_type in [
+        "mllama",
+        "llama4",
+        "gemma3",
+        "qwen3_vl_moe",
+        "qwen3_5",
+        "qwen3_5_moe",
+        "deepseek_vl_v2",
+    ]
     if multimodal:
         processor = AutoProcessor.from_pretrained(args.model_dir)
         if args.model_export is not None:

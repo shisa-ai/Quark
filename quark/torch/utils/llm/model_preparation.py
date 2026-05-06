@@ -45,6 +45,19 @@ if is_transformers_available() and is_transformers_version_higher_or_equal("4.57
     from transformers import Qwen3VLMoeForConditionalGeneration  # type: ignore[attr-defined]
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextExperts
 
+Qwen3_5ForConditionalGeneration = None
+Qwen3_5MoeForConditionalGeneration = None
+Qwen3_5MoeExperts = None
+if is_transformers_available():
+    try:
+        from transformers import (  # type: ignore[attr-defined]
+            Qwen3_5ForConditionalGeneration,
+            Qwen3_5MoeForConditionalGeneration,
+        )
+        from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeExperts  # type: ignore[attr-defined]
+    except (ImportError, AttributeError):
+        pass
+
 
 from quark.shares.utils.log import ScreenLogger
 
@@ -55,6 +68,7 @@ from .module_replacement.replacement_utils import (
     replace_gptoss_topkrouter_with_linear,
     replace_granite_moe_experts_with_linear,
     replace_llama4_experts_with_sequential,
+    replace_qwen3_5_moe_experts_with_linear,
     replace_qwen3vlmoe_experts_with_linear,
 )
 
@@ -108,6 +122,10 @@ def prepare_for_moe_quant(model: nn.Module) -> None:
         for name, module in model.named_modules(remove_duplicate=False):
             if isinstance(module, Qwen3VLMoeTextExperts):
                 replace_qwen3vlmoe_experts_with_linear(module)
+    elif model.config.model_type in ["qwen3_5_moe", "qwen3_5_moe_text"] and Qwen3_5MoeExperts is not None:
+        for name, module in model.named_modules(remove_duplicate=False):
+            if isinstance(module, Qwen3_5MoeExperts):
+                replace_qwen3_5_moe_experts_with_linear(module)
 
 
 def revert_model_patching(model: nn.Module) -> None:
@@ -200,6 +218,34 @@ def get_model(
                 model.register_for_auto_class("AutoModelForCausalLM")  # type: ignore[no-untyped-call]
         elif config.model_type == "qwen3_vl_moe":
             model = Qwen3VLMoeForConditionalGeneration.from_pretrained(  # type: ignore[misc]
+                ckpt_path,
+                device_map=device,
+                torch_dtype=model_dtype,
+                max_memory=max_memory,
+                trust_remote_code=trust_remote_code,
+                attn_implementation=attn_implementation,
+            )  # type: ignore[no-untyped-call]
+        elif config.model_type == "qwen3_5":
+            if Qwen3_5ForConditionalGeneration is None:
+                raise ImportError(
+                    "Qwen3.5/Qwen3.6 dense models require a Transformers version with "
+                    "Qwen3_5ForConditionalGeneration support."
+                )
+            model = Qwen3_5ForConditionalGeneration.from_pretrained(  # type: ignore[misc]
+                ckpt_path,
+                device_map=device,
+                torch_dtype=model_dtype,
+                max_memory=max_memory,
+                trust_remote_code=trust_remote_code,
+                attn_implementation=attn_implementation,
+            )  # type: ignore[no-untyped-call]
+        elif config.model_type == "qwen3_5_moe":
+            if Qwen3_5MoeForConditionalGeneration is None:
+                raise ImportError(
+                    "Qwen3.5/Qwen3.6 MoE models require a Transformers version with "
+                    "Qwen3_5MoeForConditionalGeneration support."
+                )
+            model = Qwen3_5MoeForConditionalGeneration.from_pretrained(  # type: ignore[misc]
                 ckpt_path,
                 device_map=device,
                 torch_dtype=model_dtype,
