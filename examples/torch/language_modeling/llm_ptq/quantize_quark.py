@@ -6,6 +6,7 @@
 import argparse
 import json
 import os
+import shutil
 import sys
 import warnings
 from pathlib import Path
@@ -30,7 +31,6 @@ from quark.torch.utils import TPDeviceManager
 # TODO: Using sys.path.append is bad practice.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from quark.contrib.llm_eval import eval_model
 from quark.torch.utils.llm import (
     check_compatibility_before_quantization,
     get_calib_dataloader,
@@ -81,6 +81,45 @@ def _get_hf_model_config(model_dir: str) -> dict:
     config_path = os.path.join(model_dir, "config.json")
     with open(config_path) as f:
         return json.load(f)
+
+
+def _copy_processor_metadata_if_available(model_dir: str, output_dir: str) -> None:
+    """Copy processor/preprocessor metadata without importing processor backends.
+
+    Some multimodal processors require optional runtime dependencies (for example
+    torchvision).  Text-only quantization/export can proceed without those
+    backends, but vLLM still expects the processor metadata files to exist when
+    loading top-level multimodal configs such as Qwen3.5/Qwen3.6.
+    """
+    filenames = [
+        "processor_config.json",
+        "preprocessor_config.json",
+        "image_processor_config.json",
+        "video_preprocessor_config.json",
+    ]
+    export_dir = Path(output_dir)
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    copied: list[str] = []
+    local_model_dir = Path(model_dir)
+    for filename in filenames:
+        source_path: Path | None = None
+        if local_model_dir.is_dir() and (local_model_dir / filename).is_file():
+            source_path = local_model_dir / filename
+        else:
+            try:
+                from huggingface_hub import hf_hub_download
+
+                source_path = Path(hf_hub_download(repo_id=model_dir, filename=filename))
+            except Exception:
+                source_path = None
+
+        if source_path is not None and source_path.is_file():
+            shutil.copyfile(source_path, export_dir / filename)
+            copied.append(filename)
+
+    if copied:
+        print(f"[INFO]: Copied processor metadata files: {', '.join(copied)}")
 
 
 def _build_quant_config(args: argparse.Namespace, model_config_type: str):
@@ -174,6 +213,7 @@ def main(args: argparse.Namespace) -> None:
         args.model_dir, max_seq_len=args.seq_len, model_type=model_type, trust_remote_code=args.trust_remote_code
     )
 
+    processor = None
     multimodal = model_type in [
         "mllama",
         "llama4",
@@ -184,11 +224,22 @@ def main(args: argparse.Namespace) -> None:
         "deepseek_vl_v2",
     ]
     if multimodal:
-        processor = AutoProcessor.from_pretrained(args.model_dir)
+        try:
+            processor = AutoProcessor.from_pretrained(args.model_dir)
+        except ImportError as exc:
+            warnings.warn(
+                f"AutoProcessor could not be loaded for {model_type}; falling back to tokenizer-only flow. "
+                f"Install the missing optional dependency if multimodal calibration/export is required. "
+                f"Original error: {exc}",
+                RuntimeWarning,
+            )
         if args.model_export is not None:
             export_dir = Path(args.output_dir)
             export_dir.mkdir(parents=True, exist_ok=True)
-            processor.save_pretrained(args.output_dir)
+            if processor is not None:
+                processor.save_pretrained(args.output_dir)
+            else:
+                _copy_processor_metadata_if_available(args.model_dir, args.output_dir)
 
     if args.use_tp:
         TPDeviceManager.tp_mesh_init()
@@ -282,7 +333,7 @@ def main(args: argparse.Namespace) -> None:
                     weight_format=args.export_weight_format,
                     pack_method=args.pack_method,
                 )
-                if not multimodal:
+                if not multimodal or processor is None:
                     tokenizer.save_pretrained(args.output_dir)
         # Export option 2: onnx
         if "onnx" in args.model_export:
@@ -313,6 +364,8 @@ def main(args: argparse.Namespace) -> None:
         save_params(model, model_type=model_type, export_dir=args.save_dir)
 
     if not args.skip_evaluation:
+        from quark.contrib.llm_eval import eval_model
+
         print("\n[INFO]: Evaluating ...")
         args.use_ppl_eval_model = True
         eval_model(
