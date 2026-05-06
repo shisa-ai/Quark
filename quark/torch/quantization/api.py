@@ -23,12 +23,15 @@ from quark.torch.quantization.config.config import QConfig, QLayerConfig, QTenso
 from quark.torch.quantization.config.config_verification import ConfigVerifier
 from quark.torch.quantization.config.type import Dtype, QSchemeType, QuantizationMode
 from quark.torch.quantization.file2file_quantization import quantize_model_per_safetensor
-from quark.torch.quantization.graph.processor.pre_check_befor_quant import check_supported_model_and_config
-from quark.torch.quantization.graph.processor.processor import (
-    post_calib_optimize,
-    post_quant_optimize,
-    prepare_quant_model,
-)
+# Lazy imports: these modules require torch.ao.quantization.pt2e which is not
+# available in all PyTorch builds (e.g., ROCm wheels). They are only needed for
+# fx_graph_mode; eager mode does not touch them.
+# from quark.torch.quantization.graph.processor.pre_check_befor_quant import check_supported_model_and_config
+# from quark.torch.quantization.graph.processor.processor import (
+#     post_calib_optimize,
+#     post_quant_optimize,
+#     prepare_quant_model,
+# )
 from quark.torch.quantization.model_transformation import process_model_transformation
 from quark.torch.quantization.nn.modules import (
     QuantConv2d,
@@ -343,6 +346,7 @@ class ModelQuantizer:
 
         # ----if model is quantized in fx.graph mode--------------
         if isinstance(model, torch.fx.GraphModule):
+            from quark.torch.quantization.graph.processor.processor import post_quant_optimize
             # The graph may have `ScaledFakeQuantize` that are not leafs of
             # of `QuantMixin`, specifically the case for activation quantization.
             # See e.g. the test `test_pixel_shuffle_annotation`.
@@ -370,6 +374,9 @@ class ModelQuantizer:
         if self.config.quant_mode is QuantizationMode.eager_mode:
             return process_model_transformation(model, self.config)
         elif self.config.quant_mode is QuantizationMode.fx_graph_mode:
+            # Lazy import to avoid torch.ao.quantization.pt2e dependency in eager mode
+            from quark.torch.quantization.graph.processor.pre_check_befor_quant import check_supported_model_and_config
+            from quark.torch.quantization.graph.processor.processor import prepare_quant_model
             # Quantization with torch.fx does not support some quantization config and some FX graphs.
             # This raises an error if the config / model used are not supported.
             check_supported_model_and_config(model, self.config)  # type: ignore [arg-type]
@@ -634,6 +641,7 @@ class ModelQuantizer:
             assert isinstance(model, nn.Module)
             return model
         elif self.config.quant_mode is QuantizationMode.fx_graph_mode:
+            from quark.torch.quantization.graph.processor.processor import post_calib_optimize
             """
             In calibration: observer will record tensor's distribution. Scale and ZP will be calculated.
             In some hardware constrain case.
