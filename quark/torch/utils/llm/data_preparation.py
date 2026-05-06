@@ -209,13 +209,18 @@ def get_calib_dataloader_to_dict(
 def _tokenize_chat_messages(
     messages: list[dict[str, str]], tokenizer: AutoTokenizer | None, seqlen: int, device: str | None
 ) -> dict[str, torch.Tensor]:
-    text = tokenizer.apply_chat_template(  # type: ignore[attr-defined,union-attr]
+    if tokenizer is None:
+        raise ValueError("A tokenizer is required for chat calibration datasets.")
+    if tokenizer.pad_token_id is None and tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    text = tokenizer.apply_chat_template(  # type: ignore[attr-defined]
         messages,
         tokenize=False,
     )
-    encoded = tokenizer(  # type: ignore[operator,misc]
+    encoded = tokenizer(
         text,
-        padding=False,
+        padding="max_length",
         max_length=seqlen,
         truncation=True,
         add_special_tokens=False,
